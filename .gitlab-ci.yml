@@ -1,0 +1,115 @@
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+      variables:
+        IMAGE_NAME: "${HARBOR_REGISTRY}/${CI_PROJECT_PATH}:dev"
+        SERVER: "10.10.17.20"
+        GITOPS_OVERLAY: "gitops/backend/overlays/dev"
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      variables:
+        # SERVER: "10.10.10.163" - old server
+        IMAGE_NAME: "${HARBOR_REGISTRY}/${CI_PROJECT_PATH}:prod"
+        SERVER: "10.10.17.110"
+        GITOPS_OVERLAY: "gitops/backend/overlays/prod"
+
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+variables:
+  PRODUCTION_USER: 'runner'
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_BUILDKIT: "1"
+  GITOPS_REPOSITORY: "git.uzinfocom.uz/core/manifests/moh/ai-ecg.git"
+
+include:
+  - project: 'core/templates/global-ci'
+    ref: 'main'
+    file: '.global-gitlab-ci.yml'
+
+before_script:
+  - eval $(ssh-agent -s)
+  - chmod 600 $MOH_PRIVATE_KEY
+  - cp $MOH_NETRC ~/.netrc
+
+.branch_rules: &branch_rules
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+
+.global_before_script: &global_before_script
+  - export BUILD_DATE=$(date '+%Y-%m-%d-%s')
+  - export CONT_NAME=$IMAGE_NAME-$BUILD_DATE
+  - echo "Container name will be -- ${CONT_NAME}"
+
+stages:
+  - validate-and-check
+  - build
+  - deploy
+
+# ── Docker image build ────────────────────────
+build:
+  stage: build
+  image: docker:latest
+  tags: 
+    - moh-runner-dind
+  services:
+    - name: docker:dind
+      command: ["--tls=false"]
+  <<: *branch_rules
+  before_script:
+    - *global_before_script
+    - echo "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_USERNAME" --password-stdin
+  script:
+    - |
+      echo "Building Docker Image: ${CONT_NAME}"
+      docker build --no-cache -t ${CONT_NAME} .
+      docker push ${CONT_NAME}
+      echo "Docker Images pushed successfully!"
+      echo "Image Full: ${CONT_NAME}"
+      echo "${CONT_NAME}" > image_tag.txt
+  artifacts:
+    paths:
+      - image_tag.txt
+
+# ── Kubernetes deploy ──────────────────────────
+deploy:
+  stage: deploy
+  <<: *branch_rules
+  image: alpine:3.22
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - export IMAGE_FULL=$(cat image_tag.txt)
+    - cat image_tag.txt
+    - echo "Deploying image $IMAGE_FULL"
+    - apk add --no-cache git yq
+    - echo "Cloning GitOps repository..."
+    - git clone --depth=1 "https://oauth2:${GITOPS_TOKEN_MOH}@${GITOPS_REPOSITORY}" gitops
+    - cd ${GITOPS_OVERLAY}
+    - git config user.name "gitops-bot"
+    - git config user.email "gitops-bot@uzinfocom.uz"
+    - >
+      yq e -i '
+      (.patches[] |
+      select(.target.kind == "Deployment") |
+      .patch)
+      |= sub("value: .*", "value: " + strenv(IMAGE_FULL))
+      ' kustomization.yaml
+    - |
+      if ! grep -q "$IMAGE_FULL" kustomization.yaml; then
+        echo "ERROR: image tag was not updated in kustomization.yaml"
+        exit 1
+      fi
+    - git add .
+
+    - |
+      if git diff --cached --quiet; then
+        echo "No changes"
+        exit 0
+      fi
+
+    - git commit -m "Deploy backend... ${CI_COMMIT_SHORT_SHA}"
+    - git push origin HEAD:main
+    - echo "Migration stage and Deployment completed successfully"
