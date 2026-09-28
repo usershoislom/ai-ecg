@@ -3,7 +3,10 @@ from pydantic import BaseModel, Field
 
 
 class ClassPrediction(BaseModel):
-    label: str
+    label: str  # стабильный машинный код (NORM/MI/CD/HYP/STTC) - для программного использования
+    name: dict[str, str] = Field(
+        ..., description="Названия класса на всех языках: {'ru': ..., 'uz': ...}"
+    )
     probability: float = Field(..., description="Sigmoid-вероятность класса, 0..1")
     threshold: float = Field(..., description="Порог принятия решения для этого класса")
     positive: bool = Field(..., description="probability >= threshold")
@@ -53,6 +56,7 @@ class MetadataResponse(BaseModel):
 
 
 class RawClassPrediction(BaseModel):
+    name: dict[str, str]
     label: str
     probability: float = Field(
         ...,

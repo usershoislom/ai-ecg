@@ -45,3 +45,26 @@ class RequestIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = get_request_id()
         return True
+
+
+class HealthCheckFilter(logging.Filter):
+    """
+    Отсекает записи о health-пробах (k8s liveness/readiness, Docker HEALTHCHECK)
+    из консольного вывода: они идут каждые несколько секунд и в Graylog
+    полностью забивают реальные запросы. Смотрим на уже отформатированное
+    сообщение, т.к. путь попадает в лог по-разному: у uvicorn.access - в args
+    (форматная строка '%s - "%s %s HTTP/%s" %d'), у core.middleware - как
+    отдельный аргумент. Ошибки (WARNING+) не трогаем - если проба падает,
+    это нужно видеть.
+    """
+
+    HEALTH_PATHS = ("/api/health",)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        return not any(path in message for path in self.HEALTH_PATHS)

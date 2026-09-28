@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/logs/download")
+@router.get("/logs/download/")
 def download_logs():
     if not os.path.exists(LOG_FILE_PATH):
         raise HTTPException(

@@ -61,6 +61,7 @@ app.include_router(annotation_router.router, prefix="/api", tags=["annotation"])
 
 
 @app.get("/api/health", response_model=dict)
+@app.get("/api/health/", response_model=dict, include_in_schema=False)
 async def health_check():
     return {"status": "ok"}
 
@@ -72,5 +73,4 @@ if __name__ == "__main__":
         "app:app",
         host="0.0.0.0",
         port=settings.PORT,
-        # reload=(settings.ENV != "production"),
     )

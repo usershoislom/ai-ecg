@@ -30,7 +30,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
-from scipy.signal import butter, filtfilt, iirnotch
+from scipy.signal import butter, filtfilt, iirnotch, sosfiltfilt
+
 from scipy.interpolate import interp1d
 from sklearn.metrics import (
     roc_auc_score,
@@ -124,18 +125,22 @@ class PTBXLMultiLabelDataset(Dataset):
         return out
 
     @staticmethod
-    def filter_ecg(data, fs):
-        """High-pass 1Hz -> low-pass 30Hz (Butterworth, 2nd order) -> notch 50Hz."""
-        b_hp, a_hp = butter(2, 1 / (fs / 2), btype="highpass")
-        data = filtfilt(b_hp, a_hp, data, axis=1)
+    def filter_ecg(data, fs, powerline=50.0):
+        """HP 0.5 Hz -> notch 50/60 Hz -> LP 40 Hz (ТЗ 4.3.1)."""
 
-        b_lp, a_lp = butter(2, 30 / (fs / 2), btype="lowpass")
-        data = filtfilt(b_lp, a_lp, data, axis=1)
+        # High-pass 0.5 Hz (sos — устойчивее butter/filtfilt на малых Wn)
+        sos_hp = butter(2, 0.5 / (fs / 2), btype='highpass', output='sos')
+        data = sosfiltfilt(sos_hp, data, axis=1)
 
-        b_notch, a_notch = iirnotch(50, Q=30, fs=fs)
-        data = filtfilt(b_notch, a_notch, data, axis=1)
+        # Notch ДО low-pass, иначе бессмыслен
+        b_n, a_n = iirnotch(powerline, Q=30, fs=fs)
+        data = filtfilt(b_n, a_n, data, axis=1)
+
+        # Low-pass 40 Hz
+        sos_lp = butter(2, 40 / (fs / 2), btype='lowpass', output='sos')
+        data = sosfiltfilt(sos_lp, data, axis=1)
         return data
-
+    
     def _load_raw(self, file_path):
         sig, _meta = wfdb.rdsamp(self.ecg_path + file_path)
         sig = np.nan_to_num(np.asarray(sig), nan=0.0)

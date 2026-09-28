@@ -21,6 +21,7 @@ from core.annotation_schemas import (
     AnnotationOut,
     ClassCreate,
     ClassOut,
+    SuperclassWithSubclassesOut,
 )
 from core.codegen import generate_unique_code
 
@@ -65,28 +66,69 @@ def _annotation_to_out(ann: Annotation, lang: str) -> AnnotationOut:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/classes/", response_model=list[ClassOut])
+@router.get("/classes/", response_model=list[SuperclassWithSubclassesOut])
 async def list_classes(
     lang: str = Query("ru"),
-    type: str | None = Query(
-        None, description="superclass | subclass, без параметра - все"
-    ),
     include_inactive: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Иерархический список: каждый суперкласс + его подклассы вложены внутрь.
+    Раньше был плоский список с фильтром type=superclass|subclass - фронту
+    приходилось группировать подклассы по parent_class_id самостоятельно.
+    Теперь группировка на бэкенде: подкласс привязан ровно к одному суперклассу
+    (см. models.py), поэтому дерево строится за один проход без рекурсии.
+
+    Подклассы, чей родительский суперкласс деактивирован/удалён (и поэтому
+    отфильтрован при include_inactive=false), не теряются молча - попадают в
+    синтетический узел "Без категории" (id=None) в конце списка, см.
+    SuperclassWithSubclassesOut.
+    """
     stmt = select(AnnotationClass)
     if not include_inactive:
         stmt = stmt.where(AnnotationClass.is_active == True)  # noqa: E712
-    if type:
-        try:
-            stmt = stmt.where(AnnotationClass.type == ClassType(type))
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="type должен быть 'superclass' или 'subclass'"
-            )
-
     rows = (await db.execute(stmt)).scalars().all()
-    return [_class_to_out(c, lang) for c in rows]
+
+    superclasses = [c for c in rows if c.type == ClassType.superclass]
+    subclasses = [c for c in rows if c.type == ClassType.subclass]
+
+    subclasses_by_parent: dict[uuid.UUID, list[AnnotationClass]] = {}
+    orphans: list[AnnotationClass] = []
+    superclass_ids = {c.id for c in superclasses}
+    for sub in subclasses:
+        if sub.parent_class_id in superclass_ids:
+            subclasses_by_parent.setdefault(sub.parent_class_id, []).append(sub)
+        else:
+            orphans.append(sub)
+
+    result = [
+        SuperclassWithSubclassesOut(
+            id=sc.id,
+            code=sc.code,
+            name=sc.name_for(lang),
+            is_custom=sc.is_custom,
+            subclasses=[
+                _class_to_out(s, lang) for s in subclasses_by_parent.get(sc.id, [])
+            ],
+        )
+        for sc in superclasses
+    ]
+
+    if orphans:
+        fallback_name = {"ru": "Без категории", "uz": "Turkumsiz"}.get(
+            lang, "Без категории"
+        )
+        result.append(
+            SuperclassWithSubclassesOut(
+                id=None,
+                code=None,
+                name=fallback_name,
+                is_custom=False,
+                subclasses=[_class_to_out(s, lang) for s in orphans],
+            )
+        )
+
+    return result
 
 
 @router.get("/classes/{class_id}/", response_model=ClassOut)
@@ -245,11 +287,9 @@ async def list_all_annotations(
         .options(selectinload(Annotation.classes))
     )
 
-    # Применяем фильтр по врачу, если он передан
     if doctor_id:
         stmt = stmt.where(Annotation.doctor_id == doctor_id)
 
-    # Сортируем по дате создания (новые сверху) и применяем пагинацию
     stmt = stmt.order_by(Annotation.created_at.desc()).limit(limit).offset(offset)
 
     rows = (await db.execute(stmt)).scalars().all()
@@ -299,7 +339,6 @@ async def create_annotation(
         .options(selectinload(Annotation.classes))
     )
     ann = (await db.execute(stmt)).scalar_one()
-    # await db.refresh(ann, attribute_names=["classes"])
     return _annotation_to_out(ann, lang)
 
 
@@ -328,10 +367,9 @@ async def update_annotation(
     ann.other_text = payload.other_text
     ann.classes = list(superclasses) + list(
         subclasses
-    )  # PUT = полная замена, без истории (см. докстринг файла)
+    )  # PUT = полная замена, без истории
 
     await db.commit()
-    # await db.refresh(ann, attribute_names=["classes"])
     stmt = (
         select(Annotation)
         .where(Annotation.id == ann.id)

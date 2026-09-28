@@ -684,7 +684,7 @@ SUBCLASSES = [
         "MI_LATERAL_INJURY",
         {
             "ru": "Боковой паттерн повреждения миокарда",
-            "uz": "Yon devor miokard shikastlanishi patterني",
+            "uz": "Yon devor miokard shikastlanishi patterni",
         },
     ),
     (

@@ -45,6 +45,8 @@ def setup_logging(level: str | None = None) -> None:
             "disable_existing_loggers": False,
             "filters": {
                 "request_id": {"()": "core.request_context.RequestIdFilter"},
+                # health-пробы k8s не пишем на INFO - см. HealthCheckFilter
+                "skip_health": {"()": "core.request_context.HealthCheckFilter"},
             },
             "formatters": {
                 "default": {
@@ -66,7 +68,7 @@ def setup_logging(level: str | None = None) -> None:
                 "console": {
                     "class": "logging.StreamHandler",
                     "formatter": "default",
-                    "filters": ["request_id"],
+                    "filters": ["request_id", "skip_health"],
                     "level": log_level,
                 },
                 "file": {

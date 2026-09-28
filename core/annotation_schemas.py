@@ -16,6 +16,22 @@ class ClassOut(BaseModel):
         from_attributes = True
 
 
+class SuperclassWithSubclassesOut(BaseModel):
+    """
+    Суперкласс + вложенные подклассы - иерархический ответ GET /annotation/classes.
+    id=None используется ТОЛЬКО для синтетического узла "Без категории" (подклассы,
+    чей родительский суперкласс деактивирован/удалён, но сам подкласс всё ещё
+    активен и используется в существующих аннотациях) - такой узел не является
+    реальным суперклассом и не годится для выбора врачом как superclass_id.
+    """
+
+    id: uuid.UUID | None
+    code: str | None
+    name: str
+    is_custom: bool = False
+    subclasses: list[ClassOut]
+
+
 class ClassCreate(BaseModel):
     type: Literal["superclass", "subclass"]
     names: dict[str, str] = Field(
